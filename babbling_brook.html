@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Babbling Brook - Lab 3 Part I</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; }
+    button { font-size: 18px; padding: 10px 20px; margin-right: 10px; }
+    code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>Babbling Brook</h1>
+  <p>Recreation of the SuperCollider one-liner:</p>
+  <pre><code>{RHPF.ar(LPF.ar(BrownNoise.ar(), 400), LPF.ar(BrownNoise.ar(), 14) * 400 + 500, 0.03, 0.1)}.play</code></pre>
+  <button id="startBtn">Start</button>
+  <button id="stopBtn">Stop</button>
+
+  <script>
+    let audioCtx = null;
+    let nodes = [];
+
+    // helper: make a looping brown noise buffer source
+    // snippet provided in the lab spec
+    function makeBrownNoise(ctx) {
+      const bufferSize = 10 * ctx.sampleRate;
+      const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const output = noiseBuffer.getChannelData(0);
+
+      let lastOut = 0;
+      for (let i = 0; i < bufferSize; i++) {
+        const brown = Math.random() * 2 - 1;
+        output[i] = (lastOut + (0.02 * brown)) / 1.02;
+        lastOut = output[i];
+        output[i] *= 3.5;
+      }
+
+      const src = ctx.createBufferSource();
+      src.buffer = noiseBuffer;
+      src.loop = true;
+      return src;
+    }
+
+    function start() {
+      if (audioCtx) return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+      // --- AUDIO PATH ---
+      // BrownNoise A -> LPF @ 400 Hz -> RHPF (input) -> gain (mul = 0.1) -> destination
+      const brownA = makeBrownNoise(audioCtx);
+
+      const lpfA = audioCtx.createBiquadFilter();
+      lpfA.type = 'lowpass';
+      lpfA.frequency.value = 400;
+
+      // RHPF = "resonant highpass filter" -> BiquadFilter type 'highpass' has built-in Q.
+      const rhpf = audioCtx.createBiquadFilter();
+      rhpf.type = 'highpass';
+      // the base value here acts as the "+ 500" offset in SC code,
+      // because any signal we connect() to this AudioParam is ADDED to it.
+      rhpf.frequency.value = 500;
+      // SC had rq = 0.03, so Q ~ 33. BiquadFilter Q is in dB; tune by ear.
+      rhpf.Q.value = 45; // changed from guess value of 20 to 45
+
+      // Output gain: SC's "mul = 0.1"
+      const outGain = audioCtx.createGain();
+      outGain.gain.value = 0.1;
+
+      // --- CONTROL / MODULATION PATH ---
+      // BrownNoise B -> LPF @ 14 Hz -> gain (*400) -> rhpf.frequency (+500 baked into base value)
+      const brownB = makeBrownNoise(audioCtx);
+
+      const lpfB = audioCtx.createBiquadFilter();
+      lpfB.type = 'lowpass';
+      lpfB.frequency.value = 14;
+
+      const modGain = audioCtx.createGain();
+      modGain.gain.value = 1500; // the "* 400" in the SC code
+      // changed to 1500 to match sample
+
+      // wire up audio path
+      brownA.connect(lpfA);
+      lpfA.connect(rhpf);
+      rhpf.connect(outGain);
+      outGain.connect(audioCtx.destination);
+
+      // wire up modulation path: connecting to an AudioParam adds to its base value.
+      brownB.connect(lpfB);
+      lpfB.connect(modGain);
+      modGain.connect(rhpf.frequency);
+
+      brownA.start(0);
+      brownB.start(0);
+
+      nodes = [brownA, brownB, lpfA, lpfB, rhpf, modGain, outGain];
+    }
+
+    function stop() {
+      if (!audioCtx) return;
+      audioCtx.close();
+      audioCtx = null;
+      nodes = [];
+    }
+
+    document.getElementById('startBtn').onclick = start;
+    document.getElementById('stopBtn').onclick = stop;
+  </script>
+</body>
+</html>

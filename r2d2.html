@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>R2D2 - Lab 3 Part II</title>
+  <style>
+  body {
+    font-family: 'Courier New', monospace;
+    max-width: 720px;
+    margin: 40px auto;
+    padding: 0 20px;
+    background: #0a0e1a;
+    color: #d4d4dc;
+    min-height: 100vh;
+  }
+  h1 {
+    color: #ffd700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  p { color: #8892b0; }
+  em { color: #c8c8d0; }
+  button {
+    font-family: inherit;
+    font-size: 16px;
+    padding: 10px 24px;
+    margin-right: 10px;
+    background: #1a1f2e;
+    color: #ffd700;
+    border: 1px solid #ffd700;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  button:hover { background: #ffd700; color: #0a0e1a; }
+  .controls {
+    margin: 20px 0;
+    padding: 16px;
+    background: #11151f;
+    border-left: 3px solid #4a90e2;
+    border-radius: 4px;
+  }
+  label { display: block; margin: 8px 0; font-size: 14px; color: #b0b8c5; }
+  input[type=range] {
+    width: 260px;
+    vertical-align: middle;
+    accent-color: #4a90e2;
+  }
+  code { background: #1a1f2e; color: #ffd700; padding: 1px 5px; border-radius: 3px; }
+  .r2 {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 140px;
+    opacity: 0.8;
+    pointer-events: none;
+  }
+  #scope {
+    display: block;
+    margin: 20px 0;
+    width: 100%;
+    height: 160px;
+    background: #11151f;
+    border-left: 3px solid #ffd700;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+  <img src="r2.png" class="r2" alt="R2D2">
+  <h1>R2D2 if he was made with a synthesizer</h1>
+  <p>After Farnell, <em>Designing Sound</em>, Practical 34.</p>
+
+  <button id="startBtn">Start</button>
+  <button id="stopBtn">Stop</button>
+
+  <div class="controls">
+    <label>Talk speed: <input id="talkSpeed" type="range" min="0" max="100" value="50"> <span id="talkSpeedVal">0.5</span></label>
+    <label>P(slide): <input id="pSlide" type="range" min="0" max="100" value="40"> <span id="pSlideVal">0.40</span></label>
+    <label>P(jump):  <input id="pJump"  type="range" min="0" max="100" value="35"> <span id="pJumpVal">0.35</span></label>
+    <label>(remainder = hold)</label>
+  </div>
+
+  <canvas id="scope" width="720" height="160"></canvas>
+
+  <script>
+    // ===== STATE =====
+    // audio context lives here once start() is called
+    let ctx = null;
+
+    // synth nodes -- assigned in start()
+    let carrier;       // sine oscillator for the main pitch
+    let modulator;     // sine oscillator that bends the carrier
+    let modGain;       // gain node = modulation index (how deep the bend)
+    let outGain;       // gain node = per-tick loudness
+    let hpf1, hpf2;    // two highpass filters in series @ 100 Hz
+    let lpf1, lpf2;    // two lowpass filters in series @ 10000 Hz
+
+    // metronome handle (so stop() can cancel it)
+    let tickTimer = null;
+
+    let analyser; // for scope visualization (optional extension)
+    let drawHandle = null; // for scope drawing loop
+
+    // ===== PARAMETER RANGES (from Farnell's Fig 57.3) =====
+    const RANGES = {
+      carrierFreq: [200, 2500],  // random 9000 + 100 Hz // changed to 200 - 2500 Hz to not be as dogwhistley
+      modRatio:    [0, 0.5],     // random 100 / 200; modulator freq = carrier * ratio
+      modIndex:    [20, 840],    // random 800 + 20 Hz 
+      amp:         [0, 0.3],     // effective range after final * 0.06 scaling
+    };
+
+
+    // ===== HELPERS =====
+
+    // pick a random float between lo and hi
+    function rand(lo, hi) {
+      return Math.random() * (hi - lo) + lo;
+    }
+
+    // roll the dice for this tick: slide, jump, or hold?
+    // uses the P(slide) and P(jump) sliders
+    function pickAction() {
+      
+      // read sliders (0-100, diving to get 0-1)
+      const pSlide = +document.getElementById('pSlide').value / 100;
+      const pJump = +document.getElementById('pJump').value / 100;
+    
+      // roll random 0-1
+      const r = Math.random();
+
+      // TODO: compare to thresholds, return 'slide' / 'jump' / 'hold'
+      if (r < pSlide)   return 'slide';
+      if (r < pSlide + pJump) return 'jump';
+      return 'hold';
+    }
+
+    // apply a random update to an AudioParam
+    //   param     -- the AudioParam (e.g. carrier.frequency)
+    //   lo, hi    -- range to pick new target from
+    //   slideTime -- how long a slide should take (seconds)
+    function randomize(param, lo, hi, slideTime) {
+      const action = pickAction()
+      
+      // if hold, return
+      if (action === 'hold') return;
+
+      // pick random target between lo and hi
+      const target = rand(lo, hi);
+      const now = ctx.currentTime;
+      
+      // cancel any previously scheduled changes to not fight new parameter
+      param.cancelScheduledValues(now);
+
+      if (action === 'jump') {
+        // TODO: if jump, param.setValueAtTime(target, now)
+        param.setValueAtTime(target, now);
+      } else {
+        // TODO: if slide, param.setTargetAtTime(target, now, slideTime / 3)
+        param.setTargetAtTime(target, now, slideTime / 3);
+      }
+    }
+
+    // like randomize() but target value is precomputed
+    // (needed for modulator freq since it depends on carrier freq)
+    function randomizeTo(param, target, slideTime) {
+      // same logic as randomize() but skip the rand() step
+      const action = pickAction()
+      if (action === 'hold') return;
+      const now = ctx.currentTime;
+      param.cancelScheduledValues(now);
+
+      if (action === 'jump') {
+        param.setValueAtTime(target, now);
+      } else {
+        param.setTargetAtTime(target, now, slideTime / 3);
+      }
+    }
+
+    // compute this tick's period in ms
+    // base = talkSpeed * 600 + 100, then jittered per-tick
+    function currentPeriodMs() {
+      // read talkSpeed slider
+      const talkSpeed = +document.getElementById('talkSpeed').value / 100;
+
+      // compute base = talk * 600 + 100
+      const base = talkSpeed * 600 + 100;
+
+      // multiply by random jitter (e.g. 0.6 - 1.4)
+      const jitter = rand(0.6, 1.4);
+      const period = base * jitter;
+
+      return period;
+    }
+
+
+    // ===== MAIN TICK =====
+    // fires on every metronome beat; randomizes each of the 4 params
+    // then schedules the next tick at a new random period
+    function tick() {
+      // TODO: get period + slideTime for this tick
+      const period = currentPeriodMs();
+      const slideTime = period / 1000; // convert ms to seconds for Web Audio
+
+      // 1. carrier frequency -- randomize directly
+      randomize(carrier.frequency, RANGES.carrierFreq[0], RANGES.carrierFreq[1], slideTime);
+
+      // 2. modulator frequency -- depends on carrier freq × random ratio
+      // compute modFreqTarget = carrier.frequency.value * rand(modRatio)
+      const modFreqTarget = carrier.frequency.value * rand(RANGES.modRatio[0], RANGES.modRatio[1]);
+      // randomizeTo(modulator.frequency, modFreqTarget, slideTime)
+      randomizeTo(modulator.frequency, modFreqTarget, slideTime);
+
+      // 3. modulation index (modGain.gain)
+      randomize(modGain.gain, RANGES.modIndex[0], RANGES.modIndex[1], slideTime);
+
+      // 4. output amplitude (outGain.gain)
+      randomize(outGain.gain, RANGES.amp[0], RANGES.amp[1], slideTime);
+
+      // schedule next tick
+      tickTimer = setTimeout(tick, period)
+    }
+
+
+    // ===== SETUP (runs on Start button) =====
+    function start() {
+      if (ctx) return;
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+      carrier = ctx.createOscillator();
+      modulator = ctx.createOscillator();
+      modGain = ctx.createGain();
+      outGain = ctx.createGain();
+      hpf1 = ctx.createBiquadFilter();
+      hpf2 = ctx.createBiquadFilter();
+      lpf1 = ctx.createBiquadFilter();
+      lpf2 = ctx.createBiquadFilter();
+
+      analyser = ctx.createAnalyser(); // for scope visualization (optional extension)
+      analyser.fftSize = 2048; 
+
+      // --- FM synth core ---
+      // create carrier oscillator (sine, start at some base freq)
+      carrier.type = 'sine';
+      carrier.frequency.value = 600; // starts at 600 Hz but is randomized otherwise
+      // create modulator oscillator (sine)
+      modulator.type = 'sine';
+      // create modGain (gain node, initial gain = some reasonable index)
+      modGain.gain.value = 10; // example initial gain
+
+      // --- output chain ---
+      // create outGain (start at 0)
+      outGain.gain.value = 0;
+      // create hpf1 + hpf2 (both highpass @ 100 Hz)
+      hpf1.type = 'highpass';
+      hpf1.frequency.value = 100;
+      hpf2.type = 'highpass';
+      hpf2.frequency.value = 100;
+      // create lpf1 + lpf2 (both lowpass @ 10000 Hz)
+      lpf1.type = 'lowpass';
+      lpf1.frequency.value = 7500; // was 10000
+      lpf2.type = 'lowpass';
+      lpf2.frequency.value = 7500; // was 10000
+
+      // --- wire it all together ---
+      // FM:    modulator -> modGain -> carrier.frequency
+      modulator.connect(modGain);
+      modGain.connect(carrier.frequency);
+      // audio: carrier -> outGain -> hpf1 -> hpf2 -> lpf1 -> lpf2 -> destination
+      carrier.connect(outGain);
+      outGain.connect(hpf1);
+      hpf1.connect(hpf2);
+      hpf2.connect(lpf1);
+      lpf1.connect(lpf2);
+      lpf2.connect(analyser); // for scope visualization (optional extension)
+      analyser.connect(ctx.destination);
+
+      // --- start oscillators + metronome ---
+      carrier.start();
+      modulator.start();
+      // call tick() to kick off the loop
+      tick();
+      draw(); // start scope visualization (optional extension)
+    }
+
+
+    // ===== TEARDOWN (runs on Stop button) =====
+    function stop() {
+      // clear the tick timer
+      clearTimeout(tickTimer);
+      if (drawHandle) cancelAnimationFrame(drawHandle); // for scope visualization (optional extension)
+      drawHandle = null;
+      // close the audio context
+      ctx.close();
+      // null out ctx so start() can run again
+      ctx = null;
+    }
+
+    // ===== SCOPE VISUALIZATION (optional extension) =====
+    function draw() {
+      const canvas = document.getElementById('scope');
+      const canvasCtx = canvas.getContext('2d');
+      const bufferLength = analyser.fftSize;
+      const dataArray = new Uint8Array(bufferLength);
+
+      function render() {
+        drawHandle = requestAnimationFrame(render);
+        analyser.getByteTimeDomainData(dataArray);
+
+        canvasCtx.fillStyle = '#11151f';
+        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+        canvasCtx.lineWidth = 2;
+        canvasCtx.strokeStyle = '#ffd700';
+        canvasCtx.beginPath();
+
+        const sliceWidth = canvas.width * 1.0 / bufferLength;
+        let x = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          const v = (dataArray[i] - 128) / 128.0;
+          const amplification = 1.75; // adjust this for more/less vertical scaling
+          const y = (canvas.height / 2) + (v * canvas.height / 2 * amplification);
+          if (i === 0)  canvasCtx.moveTo(x, y);
+          else canvasCtx.lineTo(x, y);
+          x += sliceWidth;
+        }
+        canvasCtx.lineTo(canvas.width, canvas.height / 2);
+        canvasCtx.stroke();
+      }
+      render();
+    }
+
+    // ===== UI WIRING =====
+    document.getElementById('startBtn').onclick = start;
+    document.getElementById('stopBtn').onclick  = stop;
+
+    // live slider labels
+    for (const id of ['talkSpeed', 'pSlide', 'pJump']) {
+      const el = document.getElementById(id);
+      const lbl = document.getElementById(id + 'Val');
+      el.addEventListener('input', () => {
+        lbl.textContent = (el.value / 100).toFixed(2);
+      });
+    }
+  </script>
+</body>
+</html>
