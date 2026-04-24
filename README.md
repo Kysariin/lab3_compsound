@@ -54,8 +54,11 @@ modulator (sine osc) --> modGain --> carrier.frequency    <-- FM modulation
                                           │
 carrier (sine osc) --> outGain --> hpf1 --> hpf2 --> lpf1 --> lpf2 --> analyser --> speakers
 ```
+
+![R2D2 signal flow diagram](claude_webaudio.svg)
+*Above visual was created by prompting Claude to make a more compact and readable version of the WebAudio graph (can be seen in webaudio_screenshot.png)*
  
-- **FM core**: `modulator → modGain → carrier.frequency`. Same `.connect(AudioParam)` trick as Part I -- the modulator's audio signal gets added to the carrier's base frequency every sample.
+- **FM core**: `modulator --> modGain --> carrier.frequency`. Same `.connect(AudioParam)` trick as Part I -- the modulator's audio signal gets added to the carrier's base frequency every sample.
 - **Output chain**: gain --> two highpass @ 100 Hz --> two lowpass @ 7500 Hz --> analyser --> speakers. Doubling each filter doubles the rolloff slope.
 - **Analyser**: a passthrough tap before the destination, drives the inline waveform visualizer.
 
