@@ -1,3 +1,4 @@
+# [portfolio entry](https://kysariin.github.io/project/sound/babel)
 # Lab 3 - Sound Synthesis
 Worked solo on Part I (confirmed w/ Mark)
 
